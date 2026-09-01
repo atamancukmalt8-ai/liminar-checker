@@ -5,7 +5,7 @@
 $ErrorActionPreference = 'Stop'
 
 $ExeUrl = 'https://raw.githubusercontent.com/atamancukmalt8-ai/liminar-checker/main/LiminarChecker.exe'
-$ExpectedSha256 = '456D7CAAF358EE00A051555261B1DB52FD264B1F7AB2D4C0D1F8B648B4599580'
+$ExpectedSha256 = '366328E7932FF968AF9EE537D408BCCA7795349C4F56055086CD3FD7DBFDEA25'
 
 if ($ExeUrl -notmatch '^https://') {
     throw 'Refusing to download from a non-HTTPS URL.'

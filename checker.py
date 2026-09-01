@@ -9,6 +9,7 @@ from __future__ import annotations
 import ctypes
 import os
 import time
+import webbrowser
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -32,6 +33,9 @@ TARGET_ENTRIES = frozenset(
     }
 )
 FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
+SYSTEM_INFORMER_URL = "https://github.com/winsiderss/systeminformer/releases/latest"
+PH_LEGACY_URL = "https://processhacker.sourceforge.io/downloads.php"
+MEMORY_STRINGS = ("liminar", "liminarghost.fun", "Liminar 1.21.4")
 
 
 def get_scan_roots() -> list[Path]:
@@ -149,6 +153,37 @@ def print_banner() -> None:
 """ + Fore.WHITE + "                           by yeh0b\n")
 
 
+def print_menu() -> str:
+    print(Fore.WHITE + Style.BRIGHT + "Choose mode:")
+    print(Fore.CYAN + "  [1] Fast PC scan")
+    print(Fore.CYAN + "  [2] Process Hacker / System Informer manual memory check")
+    print(Fore.CYAN + "  [3] Exit")
+    choice = input(Fore.WHITE + "\n> ").strip().lower()
+    return choice
+
+
+def show_process_hacker_manual() -> None:
+    print_banner()
+    print(Fore.CYAN + Style.BRIGHT + "Process Hacker / System Informer manual mode\n")
+    print(Fore.WHITE + "Official download pages:")
+    print(Fore.CYAN + f"  {SYSTEM_INFORMER_URL}")
+    print(Fore.CYAN + f"  {PH_LEGACY_URL}")
+    print()
+    print(Fore.YELLOW + "I will open the official System Informer releases page in your browser.")
+    print(Fore.YELLOW + "Download and run it manually, then check javaw.exe strings yourself.")
+    print()
+    print(Fore.WHITE + Style.BRIGHT + "Search strings:")
+    for value in MEMORY_STRINGS:
+        print(Fore.LIGHTRED_EX + f"  {value}")
+    print()
+    print(Fore.WHITE + "If any of these exact strings appear in javaw.exe memory, treat it as DETECT.")
+    try:
+        webbrowser.open(SYSTEM_INFORMER_URL)
+    except Exception:
+        pass
+    input(Fore.WHITE + "\nPress Enter to return to menu...")
+
+
 def _format_duration(seconds: float) -> str:
     """Render a concise, user-friendly duration for the progress line."""
     seconds = max(0, round(seconds))
@@ -179,7 +214,7 @@ def _print_progress(checked: int, total: int, started_at: float) -> None:
     print(Fore.CYAN + progress + Style.RESET_ALL, end="", flush=True)
 
 
-def main() -> None:
+def run_scan() -> None:
     print_banner()
     print(Fore.CYAN + "Scanning all accessible fixed drives..." + Style.RESET_ALL)
     backup = check_backup_json()
@@ -222,6 +257,22 @@ def main() -> None:
         print(Fore.YELLOW + "[SUSPICIOUS] No matching JAR detected; backup.json alone is only a suspicion signal.")
     else:
         print(Fore.GREEN + Style.BRIGHT + "[CLEAN] No detections found.")
+    input(Fore.WHITE + "\nPress Enter to return to menu...")
+
+
+def main() -> None:
+    while True:
+        print_banner()
+        choice = print_menu()
+        if choice in {"1", "scan", "s"}:
+            run_scan()
+        elif choice in {"2", "ph", "process", "process hacker", "system informer"}:
+            show_process_hacker_manual()
+        elif choice in {"3", "exit", "q", "quit"}:
+            break
+        else:
+            print(Fore.RED + "Unknown option.")
+            time.sleep(0.8)
     input(Fore.WHITE + "\nPress Enter to exit...")
 
 
