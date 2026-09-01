@@ -9,7 +9,6 @@ from __future__ import annotations
 import ctypes
 import os
 import time
-import webbrowser
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -33,9 +32,22 @@ TARGET_ENTRIES = frozenset(
     }
 )
 FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
-SYSTEM_INFORMER_URL = "https://github.com/winsiderss/systeminformer/releases/latest"
-PH_LEGACY_URL = "https://processhacker.sourceforge.io/downloads.php"
-MEMORY_STRINGS = ("liminar", "liminarghost.fun", "Liminar 1.21.4")
+KNOWN_FAKE_APPLESKIN_ENTRY = "a/Il.class"
+KNOWN_FAKE_HITBOX_ENTRY = "squeek/appleskin/mixin/EntityHitboxMixin.class"
+HITBOX_PATH_HINTS = ("hitbox", "boundingbox", "entitymixin", "entity_mixin")
+HITBOX_BYTE_MARKERS = (
+    b"getBoundingBox",
+    b"setReturnValue",
+    b"currentScale",
+    b"method_17939",
+    b"method_17941",
+    b"net/minecraft/class_238",
+)
+FAKE_DOWNLOADER_MARKERS = (
+    b"ProcessBuilder",
+    b"openStream",
+    b"releases/download",
+)
 
 
 def get_scan_roots() -> list[Path]:
@@ -125,6 +137,52 @@ def check_jar(jar_path: Path) -> bool:
         return False
 
 
+def check_hitbox_jar(jar_path: Path) -> list[str]:
+    """Detect hidden hitbox expansion indicators from ZIP metadata and class constants."""
+    findings: list[str] = []
+    try:
+        with zipfile.ZipFile(jar_path) as archive:
+            infos = archive.infolist()
+            names = {info.filename for info in infos}
+            lower_names = {name.lower(): name for name in names}
+
+            fake_entry = lower_names.get(KNOWN_FAKE_APPLESKIN_ENTRY.lower())
+            hitbox_entry = lower_names.get(KNOWN_FAKE_HITBOX_ENTRY.lower())
+            if fake_entry and hitbox_entry:
+                findings.append(f"known fake AppleSkin entries: {fake_entry}, {hitbox_entry}")
+
+            for info in infos:
+                name = info.filename
+                lower_name = name.lower()
+                if not lower_name.endswith(".class"):
+                    continue
+                if info.file_size <= 0 or info.file_size > 512_000:
+                    continue
+                if not any(hint in lower_name for hint in HITBOX_PATH_HINTS):
+                    continue
+                try:
+                    data = archive.read(info)
+                except (OSError, RuntimeError, zipfile.BadZipFile):
+                    continue
+                marker_hits = [marker.decode("ascii") for marker in HITBOX_BYTE_MARKERS if marker in data]
+                if len(marker_hits) >= 5:
+                    findings.append(f"hidden hitbox scaling mixin: {name} ({', '.join(marker_hits)})")
+
+            if fake_entry:
+                try:
+                    data = archive.read(fake_entry)
+                except (OSError, RuntimeError, zipfile.BadZipFile):
+                    data = b""
+                marker_hits = [marker.decode("ascii") for marker in FAKE_DOWNLOADER_MARKERS if marker in data]
+                if len(marker_hits) >= 2:
+                    findings.append(f"embedded downloader/launcher: {fake_entry} ({', '.join(marker_hits)})")
+    except (PermissionError, OSError, zipfile.BadZipFile, zipfile.LargeZipFile, EOFError):
+        return []
+    except Exception:
+        return []
+    return findings
+
+
 def check_backup_json() -> Path | None:
     """Check the current profile's uTorrent backup file without hardcoding a name."""
     candidates = [
@@ -156,32 +214,10 @@ def print_banner() -> None:
 def print_menu() -> str:
     print(Fore.WHITE + Style.BRIGHT + "Choose mode:")
     print(Fore.CYAN + "  [1] Fast PC scan")
-    print(Fore.CYAN + "  [2] Process Hacker / System Informer manual memory check")
+    print(Fore.CYAN + "  [2] Hidden hitbox / fake AppleSkin scan")
     print(Fore.CYAN + "  [3] Exit")
     choice = input(Fore.WHITE + "\n> ").strip().lower()
     return choice
-
-
-def show_process_hacker_manual() -> None:
-    print_banner()
-    print(Fore.CYAN + Style.BRIGHT + "Process Hacker / System Informer manual mode\n")
-    print(Fore.WHITE + "Official download pages:")
-    print(Fore.CYAN + f"  {SYSTEM_INFORMER_URL}")
-    print(Fore.CYAN + f"  {PH_LEGACY_URL}")
-    print()
-    print(Fore.YELLOW + "I will open the official System Informer releases page in your browser.")
-    print(Fore.YELLOW + "Download and run it manually, then check javaw.exe strings yourself.")
-    print()
-    print(Fore.WHITE + Style.BRIGHT + "Search strings:")
-    for value in MEMORY_STRINGS:
-        print(Fore.LIGHTRED_EX + f"  {value}")
-    print()
-    print(Fore.WHITE + "If any of these exact strings appear in javaw.exe memory, treat it as DETECT.")
-    try:
-        webbrowser.open(SYSTEM_INFORMER_URL)
-    except Exception:
-        pass
-    input(Fore.WHITE + "\nPress Enter to return to menu...")
 
 
 def _format_duration(seconds: float) -> str:
@@ -260,14 +296,54 @@ def run_scan() -> None:
     input(Fore.WHITE + "\nPress Enter to return to menu...")
 
 
+def run_hitbox_scan() -> None:
+    print_banner()
+    print(Fore.CYAN + "Scanning all accessible fixed drives for hidden hitbox indicators..." + Style.RESET_ALL)
+    jars = find_jars(get_scan_roots())
+    print(Fore.WHITE + f"Found JAR files: {len(jars)}. Checking hitbox mixin signatures..." + Style.RESET_ALL)
+    detected: list[tuple[Path, list[str]]] = []
+    checked = 0
+    workers = min(16, max(8, (os.cpu_count() or 4) * 2))
+    started_at = time.monotonic()
+    last_progress_update = 0.0
+
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="hitbox-check") as executor:
+        futures = {executor.submit(check_hitbox_jar, jar): jar for jar in jars}
+        for future in as_completed(futures):
+            jar = futures[future]
+            try:
+                findings = future.result()
+                if findings:
+                    detected.append((jar, findings))
+            except Exception:
+                pass
+            checked += 1
+            now = time.monotonic()
+            if now - last_progress_update >= 0.10 or checked == len(jars):
+                _print_progress(checked, len(jars), started_at)
+                last_progress_update = now
+
+    print()
+    for jar, findings in sorted(detected, key=lambda item: os.path.normcase(os.fspath(item[0]))):
+        print(Fore.RED + Style.BRIGHT + f"[DETECTED-HITBOX] {jar}")
+        for finding in findings:
+            print(Fore.RED + f"  {finding}")
+
+    if detected:
+        print("\n" + Fore.LIGHTRED_EX + Style.BRIGHT + "HIDDEN HITBOX DETECTED")
+    else:
+        print(Fore.GREEN + Style.BRIGHT + "[CLEAN] No hidden hitbox indicators found.")
+    input(Fore.WHITE + "\nPress Enter to return to menu...")
+
+
 def main() -> None:
     while True:
         print_banner()
         choice = print_menu()
         if choice in {"1", "scan", "s"}:
             run_scan()
-        elif choice in {"2", "ph", "process", "process hacker", "system informer"}:
-            show_process_hacker_manual()
+        elif choice in {"2", "hitbox", "hb", "fake appleskin"}:
+            run_hitbox_scan()
         elif choice in {"3", "exit", "q", "quit"}:
             break
         else:
